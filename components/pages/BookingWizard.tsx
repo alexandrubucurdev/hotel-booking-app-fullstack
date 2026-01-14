@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { DateRange, DayPicker } from "react-day-picker";
-import { differenceInDays, addDays } from "date-fns";
+import { useState, useEffect, useRef } from "react";
+import { DayPicker } from "react-day-picker";
+import { differenceInCalendarDays, addDays } from "date-fns";
 import { ro } from "date-fns/locale";
 import "react-day-picker/dist/style.css";
 import { useFormState, useFormStatus } from "react-dom";
@@ -22,12 +22,16 @@ import {
      Minus,
      Plus,
      CheckCircle2,
-     Send, // Adaugat pentru buton daca e nevoie
+     CreditCard,
+     FileText,
 } from "lucide-react";
 import Image from "next/image";
 import { getAvailableRooms, createBookingSession } from "@/lib/actions/booking";
 import { rooms } from "@/lib/data/rooms";
-import Button from "@/components/ui/Button"; // <--- IMPORTUL CERUT
+import Button from "@/components/ui/Button";
+
+// --- CONFIGURARE ---
+const MAX_GLOBAL_CAPACITY = 4;
 
 // --- ANIMATII ---
 const fadeIn = (delay = 0) => ({
@@ -45,8 +49,99 @@ const stepVariants = {
      exit: { opacity: 0, x: -20, transition: { duration: 0.3 } },
 };
 
-// --- COMPONENTE STILIZATE ---
+// --- COMPONENTA DEDICATĂ ȘI STABILĂ PENTRU TURNSTILE ---
+function TurnstileWidget({ onVerify }: { onVerify: (token: string) => void }) {
+     const containerRef = useRef<HTMLDivElement>(null);
+     // Folosim un ref pentru a ține minte ID-ul widgetului creat de Cloudflare
+     const widgetId = useRef<string | null>(null);
+     const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
+     useEffect(() => {
+          if (!siteKey) return;
+
+          // 1. Funcția de curățare (se execută când componenta dispare)
+          return () => {
+               if (widgetId.current && window.turnstile) {
+                    window.turnstile.remove(widgetId.current);
+                    widgetId.current = null;
+               }
+          };
+     }, [siteKey]);
+
+     useEffect(() => {
+          if (!siteKey || widgetId.current) return; // Dacă e deja randat, nu mai facem nimic
+
+          const renderWidget = () => {
+               if (
+                    window.turnstile &&
+                    containerRef.current &&
+                    !widgetId.current
+               ) {
+                    try {
+                         const id = window.turnstile.render(
+                              containerRef.current,
+                              {
+                                   sitekey: siteKey,
+                                   callback: (token: string) => {
+                                        onVerify(token);
+                                   },
+                                   "expired-callback": () => {
+                                        onVerify(""); // Resetăm token-ul dacă expiră
+                                   },
+                              }
+                         );
+                         widgetId.current = id;
+                    } catch (e) {
+                         console.error("Turnstile render error:", e);
+                    }
+               }
+          };
+
+          // Verificăm dacă scriptul e încărcat
+          if (window.turnstile) {
+               renderWidget();
+          } else {
+               // Injectăm scriptul dacă nu există
+               const scriptId = "cf-turnstile-script";
+               if (!document.getElementById(scriptId)) {
+                    const script = document.createElement("script");
+                    script.id = scriptId;
+                    script.src =
+                         "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+                    script.async = true;
+                    script.defer = true;
+                    document.body.appendChild(script);
+               }
+
+               // Verificăm periodic prezența
+               const interval = setInterval(() => {
+                    if (window.turnstile) {
+                         clearInterval(interval);
+                         renderWidget();
+                    }
+               }, 100);
+
+               return () => clearInterval(interval);
+          }
+     }, [siteKey, onVerify]);
+
+     if (!siteKey) {
+          return (
+               <p className="text-red-500 text-sm">
+                    Eroare: Lipsă Site Key în .env.local
+               </p>
+          );
+     }
+
+     return (
+          <div
+               ref={containerRef}
+               className="min-h-[65px] flex justify-center my-4"
+          />
+     );
+}
+
+// --- COMPONENTE STILIZATE ---
 const FormInput = ({ id, label, error, type = "text", ...props }: any) => (
      <div className="relative w-full">
           <input
@@ -131,14 +226,13 @@ const FormTextarea = ({ id, label, ...props }: any) => (
      </div>
 );
 
-// Butonul de Submit care foloseste componenta importata Button
 function SubmitButton() {
      const { pending } = useFormStatus();
      return (
           <Button
                type="submit"
                disabled={pending}
-               variant="primary" // Presupunand ca ai varianta primary definita in Button
+               variant="primary"
                size="lg"
                className="w-full uppercase tracking-wider"
           >
@@ -157,8 +251,13 @@ function SubmitButton() {
      );
 }
 
-// Counter Component
-const GuestCounter = ({ label, value, onChange, min = 1, max = 5 }: any) => (
+const GuestCounter = ({
+     label,
+     value,
+     onChange,
+     min = 0,
+     canIncrement,
+}: any) => (
      <div className="flex items-center justify-between bg-white p-3 border-b border-gray-100 last:border-0">
           <span className="text-sm font-semibold text-traian-charcoal">
                {label}
@@ -181,13 +280,13 @@ const GuestCounter = ({ label, value, onChange, min = 1, max = 5 }: any) => (
                </span>
                <button
                     type="button"
-                    onClick={() => value < max && onChange(value + 1)}
+                    onClick={() => canIncrement && onChange(value + 1)}
                     className={`p-1 rounded-full transition-colors ${
-                         value >= max
+                         !canIncrement
                               ? "text-gray-300 cursor-not-allowed"
                               : "text-traian-burgundy hover:bg-traian-cream"
                     }`}
-                    disabled={value >= max}
+                    disabled={!canIncrement}
                >
                     <Plus className="w-4 h-4" />
                </button>
@@ -197,29 +296,21 @@ const GuestCounter = ({ label, value, onChange, min = 1, max = 5 }: any) => (
 
 export default function BookingWizard() {
      const [step, setStep] = useState<1 | 2 | 3>(1);
-     const [dateRange, setDateRange] = useState<DateRange | undefined>({
-          from: new Date(),
-          to: addDays(new Date(), 1),
+     const [dateRange, setDateRange] = useState<any>({
+          from: addDays(new Date(new Date().setHours(0, 0, 0, 0)), 1),
+          to: addDays(new Date(new Date().setHours(0, 0, 0, 0)), 2),
      });
      const [adults, setAdults] = useState(2);
      const [children, setChildren] = useState(0);
+     const totalGuests = adults + children;
 
      const [availabilityData, setAvailabilityData] = useState<any[]>([]);
      const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
      const [loadingRooms, setLoadingRooms] = useState(false);
      const [state, formAction] = useFormState(createBookingSession, null);
 
-     useEffect(() => {
-          const script = document.createElement("script");
-          script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
-          script.async = true;
-          script.defer = true;
-          document.body.appendChild(script);
-          return () => {
-               if (document.body.contains(script))
-                    document.body.removeChild(script);
-          };
-     }, []);
+     // Stocăm token-ul Turnstile în starea părintelui
+     const [turnstileToken, setTurnstileToken] = useState<string>("");
 
      const handleCheckAvailability = async () => {
           if (dateRange?.from && dateRange?.to) {
@@ -242,7 +333,10 @@ export default function BookingWizard() {
 
      const nights =
           dateRange?.from && dateRange?.to
-               ? Math.max(differenceInDays(dateRange.to, dateRange.from), 1)
+               ? Math.max(
+                      differenceInCalendarDays(dateRange.to, dateRange.from),
+                      1
+                 )
                : 0;
 
      const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
@@ -326,7 +420,7 @@ export default function BookingWizard() {
                {/* --- MAIN CONTENT --- */}
                <section className="py-16 relative z-20 ">
                     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+                         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                               {/* --- LEFT COLUMN (WIZARD) --- */}
                               <div className="lg:col-span-8">
                                    <motion.div
@@ -353,17 +447,17 @@ export default function BookingWizard() {
                                                             </h2>
                                                             <div className="w-16 h-1 bg-traian-gold mx-auto rounded-full mb-4"></div>
                                                             <p className="text-gray-500">
-                                                                 Tarifele și
-                                                                 disponibilitatea
-                                                                 sunt
-                                                                 actualizate în
-                                                                 timp real.
+                                                                 Capacitate
+                                                                 maximă
+                                                                 selectabilă:{" "}
+                                                                 {
+                                                                      MAX_GLOBAL_CAPACITY
+                                                                 }{" "}
+                                                                 persoane.
                                                             </p>
                                                        </div>
 
-                                                       {/* Layout GRID pentru Calendar (Stanga) si Controale (Dreapta) */}
                                                        <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 mb-10 items-stretch">
-                                                            {/* 1. Calendarul - Ocupa mai mult spatiu */}
                                                             <div className="xl:col-span-7 bg-gray-50 p-6 rounded-xl border border-gray-100 flex justify-center items-center">
                                                                  <DayPicker
                                                                       mode="range"
@@ -388,9 +482,7 @@ export default function BookingWizard() {
                                                                  />
                                                             </div>
 
-                                                            {/* 2. Controalele (Oaspeti + Orar) - Aliniate in dreapta, aceeasi inaltime */}
                                                             <div className="xl:col-span-5 flex flex-col gap-6 h-full">
-                                                                 {/* Card Oaspeti */}
                                                                  <div className="bg-gray-50 rounded-xl p-5 border border-gray-100 flex-1 flex flex-col justify-center">
                                                                       <h3 className="font-serif text-lg font-bold text-traian-charcoal flex items-center gap-2 mb-4 pb-2 border-b border-gray-200/50">
                                                                            <UserPlus className="w-4 h-4 text-traian-burgundy" />{" "}
@@ -405,6 +497,13 @@ export default function BookingWizard() {
                                                                                 onChange={
                                                                                      setAdults
                                                                                 }
+                                                                                min={
+                                                                                     1
+                                                                                }
+                                                                                canIncrement={
+                                                                                     totalGuests <
+                                                                                     MAX_GLOBAL_CAPACITY
+                                                                                }
                                                                            />
                                                                            <GuestCounter
                                                                                 label="Copii"
@@ -417,11 +516,25 @@ export default function BookingWizard() {
                                                                                 min={
                                                                                      0
                                                                                 }
+                                                                                canIncrement={
+                                                                                     totalGuests <
+                                                                                     MAX_GLOBAL_CAPACITY
+                                                                                }
                                                                            />
+                                                                           <div className="mt-2 text-xs text-center text-gray-400">
+                                                                                Total
+                                                                                selectat:{" "}
+                                                                                {
+                                                                                     totalGuests
+                                                                                }{" "}
+                                                                                /{" "}
+                                                                                {
+                                                                                     MAX_GLOBAL_CAPACITY
+                                                                                }
+                                                                           </div>
                                                                       </div>
                                                                  </div>
 
-                                                                 {/* Card Orar */}
                                                                  <div className="bg-gray-50 rounded-xl p-5 border border-gray-100 flex-1 flex flex-col justify-center">
                                                                       <h3 className="font-serif text-lg font-bold text-traian-charcoal flex items-center gap-2 mb-4 pb-2 border-b border-gray-200/50">
                                                                            <Clock className="w-4 h-4 text-traian-burgundy" />{" "}
@@ -535,6 +648,13 @@ export default function BookingWizard() {
                                                                            availabilityInfo &&
                                                                            availabilityInfo.available_count >
                                                                                 0;
+
+                                                                      const isCapacityOk =
+                                                                           totalGuests <=
+                                                                           room.capacity;
+                                                                      const canSelect =
+                                                                           isAvailable &&
+                                                                           isCapacityOk;
                                                                       const isSelected =
                                                                            selectedRoomId ===
                                                                            room.id;
@@ -545,7 +665,7 @@ export default function BookingWizard() {
                                                                                      room.id
                                                                                 }
                                                                                 onClick={() =>
-                                                                                     isAvailable &&
+                                                                                     canSelect &&
                                                                                      (setSelectedRoomId(
                                                                                           room.id
                                                                                      ),
@@ -556,7 +676,7 @@ export default function BookingWizard() {
                                                                                 className={`
                                 group relative bg-white rounded-xl overflow-hidden transition-all duration-300 cursor-pointer
                                 ${
-                                     !isAvailable
+                                     !canSelect
                                           ? "opacity-60 grayscale cursor-not-allowed"
                                           : "hover:shadow-xl hover:-translate-y-1"
                                 }
@@ -583,7 +703,13 @@ export default function BookingWizard() {
                                                                                           />
                                                                                           <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-60"></div>
                                                                                           <div className="absolute bottom-3 left-3 flex gap-2">
-                                                                                               <span className="bg-white/90 backdrop-blur px-3 py-1 text-xs font-bold text-traian-charcoal shadow-sm uppercase tracking-wide">
+                                                                                               <span
+                                                                                                    className={`px-3 py-1 text-xs font-bold shadow-sm uppercase tracking-wide backdrop-blur ${
+                                                                                                         isCapacityOk
+                                                                                                              ? "bg-white/90 text-traian-charcoal"
+                                                                                                              : "bg-red-500/90 text-white"
+                                                                                                    }`}
+                                                                                               >
                                                                                                     Max{" "}
                                                                                                     {
                                                                                                          room.capacity
@@ -650,7 +776,17 @@ export default function BookingWizard() {
                                                                                           </div>
 
                                                                                           <div className="mt-6 flex justify-end">
-                                                                                               {isAvailable ? (
+                                                                                               {!isCapacityOk ? (
+                                                                                                    <span className="text-orange-600 font-bold text-sm uppercase flex items-center bg-orange-50 px-3 py-1 rounded">
+                                                                                                         Capacitate
+                                                                                                         depășită
+                                                                                                         (
+                                                                                                         {
+                                                                                                              totalGuests
+                                                                                                         }{" "}
+                                                                                                         pers)
+                                                                                                    </span>
+                                                                                               ) : isAvailable ? (
                                                                                                     <Button
                                                                                                          variant="primary"
                                                                                                          size="sm"
@@ -710,7 +846,6 @@ export default function BookingWizard() {
                                                             </div>
                                                        </div>
 
-                                                       {/* Info Alert */}
                                                        <div className="bg-traian-cream border-l-4 border-traian-gold p-4 mb-8 flex gap-4 items-start">
                                                             <Info className="h-6 w-6 text-traian-burgundy mt-0.5 flex-shrink-0" />
                                                             <div>
@@ -734,8 +869,8 @@ export default function BookingWizard() {
                                                                       momentul
                                                                       sosirii.
                                                                       Veți primi
-                                                                      instrucțiunile
-                                                                      de plată
+                                                                      factura și
+                                                                      detaliile
                                                                       pe email.
                                                                  </p>
                                                             </div>
@@ -745,7 +880,6 @@ export default function BookingWizard() {
                                                             action={formAction}
                                                             className="space-y-8"
                                                        >
-                                                            {/* Hidden Inputs */}
                                                             <input
                                                                  type="hidden"
                                                                  name="checkIn"
@@ -776,19 +910,39 @@ export default function BookingWizard() {
                                                                  }
                                                             />
 
-                                                            <div className="space-y-8">
+                                                            {/* Tokenul Turnstile preluat din componenta noastră stabilă */}
+                                                            <input
+                                                                 type="hidden"
+                                                                 name="cf-turnstile-response"
+                                                                 value={
+                                                                      turnstileToken
+                                                                 }
+                                                            />
+
+                                                            <div className="space-y-6">
+                                                                 <h3 className="font-bold text-traian-charcoal flex items-center gap-2 border-b pb-2">
+                                                                      <CreditCard className="w-5 h-5 text-traian-gold" />{" "}
+                                                                      Date
+                                                                      Titular
+                                                                 </h3>
+
                                                                  <FormInput
                                                                       id="guestName"
-                                                                      label="Nume și Prenume"
+                                                                      name="guestName"
+                                                                      autoComplete="name"
+                                                                      label="Nume și Prenume (din buletin)"
                                                                       error={
                                                                            state
                                                                                 ?.error
                                                                                 ?.guestName
                                                                       }
                                                                  />
+
                                                                  <div className="grid md:grid-cols-2 gap-8">
                                                                       <FormInput
                                                                            id="guestPhone"
+                                                                           name="guestPhone"
+                                                                           autoComplete="tel"
                                                                            label="Număr Telefon"
                                                                            type="tel"
                                                                            error={
@@ -799,6 +953,8 @@ export default function BookingWizard() {
                                                                       />
                                                                       <FormInput
                                                                            id="guestEmail"
+                                                                           name="guestEmail"
+                                                                           autoComplete="email"
                                                                            label="Adresă Email"
                                                                            type="email"
                                                                            error={
@@ -808,22 +964,83 @@ export default function BookingWizard() {
                                                                            }
                                                                       />
                                                                  </div>
-                                                                 <FormTextarea
-                                                                      id="specialRequests"
-                                                                      label="Cereri Speciale (Opțional)"
-                                                                 />
                                                             </div>
 
-                                                            {/* Turnstile */}
+                                                            <div className="space-y-6 pt-4">
+                                                                 <h3 className="font-bold text-traian-charcoal flex items-center gap-2 border-b pb-2">
+                                                                      <FileText className="w-5 h-5 text-traian-gold" />{" "}
+                                                                      Detalii
+                                                                      Facturare
+                                                                      & Check-in
+                                                                 </h3>
+
+                                                                 <div className="grid md:grid-cols-2 gap-8">
+                                                                      <FormInput
+                                                                           id="cnp"
+                                                                           name="cnp"
+                                                                           label="CNP / Serie Buletin"
+                                                                           placeholder="Necesar pentru fișa de cazare"
+                                                                      />
+                                                                      <FormInput
+                                                                           id="address"
+                                                                           name="address"
+                                                                           autoComplete="street-address"
+                                                                           label="Adresa (Județ, Oraș, Stradă)"
+                                                                           placeholder="Pentru factură"
+                                                                      />
+                                                                 </div>
+                                                            </div>
+
+                                                            <FormTextarea
+                                                                 id="specialRequests"
+                                                                 name="specialRequests"
+                                                                 label="Cereri Speciale (Opțional)"
+                                                            />
+
+                                                            <div className="flex items-start gap-3 pt-2">
+                                                                 <input
+                                                                      type="checkbox"
+                                                                      id="terms"
+                                                                      name="terms"
+                                                                      required
+                                                                      className="mt-1 w-4 h-4 text-traian-burgundy border-gray-300 rounded focus:ring-traian-burgundy"
+                                                                 />
+                                                                 <label
+                                                                      htmlFor="terms"
+                                                                      className="text-sm text-gray-600"
+                                                                 >
+                                                                      Sunt de
+                                                                      acord cu{" "}
+                                                                      <a
+                                                                           href="/termeni"
+                                                                           className="text-traian-burgundy underline"
+                                                                      >
+                                                                           Termenii
+                                                                           și
+                                                                           Condițiile
+                                                                      </a>{" "}
+                                                                      și cu
+                                                                      prelucrarea
+                                                                      datelor cu
+                                                                      caracter
+                                                                      personal
+                                                                      în scopul
+                                                                      cazării.
+                                                                 </label>
+                                                            </div>
+
+                                                            {/* WIDGET STABIL */}
                                                             <div className="flex flex-col items-center gap-2 pt-4">
-                                                                 <div
-                                                                      className="cf-turnstile"
-                                                                      data-sitekey={
-                                                                           process
-                                                                                .env
-                                                                                .NEXT_PUBLIC_TURNSTILE_SITE_KEY
+                                                                 <TurnstileWidget
+                                                                      onVerify={(
+                                                                           token
+                                                                      ) =>
+                                                                           setTurnstileToken(
+                                                                                token
+                                                                           )
                                                                       }
-                                                                 ></div>
+                                                                 />
+
                                                                  {state?.error
                                                                       ?.turnstileToken && (
                                                                       <p className="text-red-500 text-xs">
@@ -839,7 +1056,6 @@ export default function BookingWizard() {
                                                             <div className="hidden lg:block pt-6">
                                                                  <SubmitButton />
                                                             </div>
-                                                            {/* Mobile Button Sticky */}
                                                             <div className="lg:hidden fixed bottom-0 left-0 w-full bg-white p-4 shadow-[0_-5px_15px_rgba(0,0,0,0.1)] border-t border-gray-100 z-50">
                                                                  <SubmitButton />
                                                             </div>
@@ -853,14 +1069,12 @@ export default function BookingWizard() {
                               {/* --- RIGHT COLUMN (SUMMARY STICKY) --- */}
                               <div className="lg:col-span-4 relative ">
                                    <div className="sticky top-8 space-y-6">
-                                        {/* Card Sumar - Design Premium */}
                                         <motion.div
                                              className="bg-traian-charcoal text-white rounded-2xl p-8 shadow-2xl border-t-4 border-traian-gold overflow-hidden relative"
                                              initial="hidden"
                                              animate="visible"
                                              variants={fadeIn(0.4)}
                                         >
-                                             {/* Pattern Decorativ */}
                                              <div className="absolute top-0 right-0 w-40 h-40 bg-white opacity-5 rounded-full -mr-16 -mt-16 blur-2xl pointer-events-none"></div>
 
                                              <div className="flex items-center justify-between mb-8 border-b border-white/10 pb-4 relative z-10">
@@ -871,7 +1085,6 @@ export default function BookingWizard() {
                                              </div>
 
                                              <div className="space-y-6 relative z-10 text-sm font-light tracking-wide">
-                                                  {/* Date */}
                                                   <div className="flex justify-between items-start">
                                                        <div className="text-gray-400 uppercase text-xs font-bold tracking-widest mt-1">
                                                             Perioada
@@ -899,7 +1112,6 @@ export default function BookingWizard() {
 
                                                   <div className="h-px bg-white/10 w-full"></div>
 
-                                                  {/* Durata */}
                                                   <div className="flex justify-between items-center">
                                                        <div className="text-gray-400 uppercase text-xs font-bold tracking-widest">
                                                             Durată
@@ -912,7 +1124,6 @@ export default function BookingWizard() {
                                                        </div>
                                                   </div>
 
-                                                  {/* Camera Selectată */}
                                                   {selectedRoom && (
                                                        <div className="bg-white/5 rounded-lg p-4 mt-2 border border-white/10 animate-fade-in">
                                                             <div className="text-traian-gold text-xs uppercase tracking-widest mb-2 font-bold flex items-center gap-2">
@@ -939,7 +1150,6 @@ export default function BookingWizard() {
                                                        </div>
                                                   )}
 
-                                                  {/* Total Pret */}
                                                   {nights > 0 &&
                                                   selectedRoom ? (
                                                        <div className="mt-8 pt-6 border-t border-white/20">
@@ -981,7 +1191,6 @@ export default function BookingWizard() {
                                              </div>
                                         </motion.div>
 
-                                        {/* Card Suport - Stil Clean */}
                                         <div className="bg-white rounded-2xl p-6 shadow-lg border border-traian-gold/10 hidden lg:block text-center">
                                              <h4 className="font-serif text-lg font-bold text-traian-charcoal mb-2">
                                                   Ai nevoie de ajutor?

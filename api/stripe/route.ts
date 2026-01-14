@@ -21,7 +21,7 @@ export async function POST(req: Request) {
           });
      }
 
-     const supabase = createClient();
+     const supabase = await createClient(); // Adaugă await aici
 
      if (event.type === "checkout.session.completed") {
           const session = event.data.object as any;

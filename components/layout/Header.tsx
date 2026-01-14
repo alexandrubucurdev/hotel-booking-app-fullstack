@@ -390,7 +390,7 @@ export default function Header() {
                                              }}
                                         >
                                              <a
-                                                  href="/contact"
+                                                  href="/rezervari"
                                                   className="hidden md:block w-full text-center bg-traian-burgundy text-white px-6 py-3 rounded-lg font-medium hover:bg-traian-burgundy/90 transition-all duration-200 transform hover:scale-105 hover:shadow-lg"
                                                   onClick={() =>
                                                        setMobileMenuOpen(false)
@@ -399,7 +399,7 @@ export default function Header() {
                                                   Rezervă Acum
                                              </a>
                                              <a
-                                                  href="tel:+40746332414"
+                                                  href="/rezervari"
                                                   className="block md:hidden w-full text-center bg-traian-burgundy text-white px-6 py-3 rounded-lg font-medium hover:bg-traian-burgundy/90 transition-all duration-200 transform hover:scale-105 hover:shadow-lg"
                                                   onClick={() =>
                                                        setMobileMenuOpen(false)

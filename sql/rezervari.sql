@@ -1,22 +1,28 @@
--- 1. Enum pentru statusul rezervării
+-- 1. Resetare (Opțional, dacă ai creat deja tabelele și vrei să le refaci curat)
+DROP FUNCTION IF EXISTS check_availability;
+DROP TABLE IF EXISTS bookings;
+DROP TABLE IF EXISTS room_types;
+DROP TYPE IF EXISTS booking_status;
+
+-- 2. Enum pentru statusul rezervării
 CREATE TYPE booking_status AS ENUM ('pending', 'confirmed', 'cancelled');
 
--- 2. Tabela pentru tipurile de camere și inventarul total (Hardcoded conform cerinței)
+-- 3. Tabela pentru tipurile de camere
 CREATE TABLE room_types (
-  id TEXT PRIMARY KEY, -- ex: 'matrimoniala', 'twin'
+  id TEXT PRIMARY KEY, -- Acesta TREBUIE să fie identic cu cel din rooms.ts
   name TEXT NOT NULL,
-  price_per_night INTEGER NOT NULL, -- preț în RON
-  total_inventory INTEGER NOT NULL DEFAULT 20
+  price_per_night INTEGER NOT NULL, -- Prețul trebuie să fie sursa de adevăr
+  total_inventory INTEGER NOT NULL DEFAULT 5 -- Setează câte camere fizice ai de fiecare tip
 );
 
--- Populăm inventarul inițial
+-- 4. Populăm datele EXACT ca în lib/data/rooms.ts
 INSERT INTO room_types (id, name, price_per_night, total_inventory) VALUES
-('matrimoniala', 'Camera Matrimonială', 300, 20),
-('twin', 'Camera Twin', 300, 20),
-('tripla', 'Camera Triplă', 400, 20),
-('cvadrupla', 'Camera Cvadruplă', 500, 20);
+('camera-matrimoniala', 'Camera Matrimonială', 140, 5),
+('camera-dubla-twin', 'Camera Dublă Twin', 140, 5),
+('camera-tripla', 'Camera Triplă', 180, 3),
+('camera-cvadrupla', 'Camera Cvadruplă', 150, 2);
 
--- 3. Tabela pentru Rezervări
+-- 5. Tabela pentru Rezervări
 CREATE TABLE bookings (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -32,16 +38,15 @@ CREATE TABLE bookings (
   
   -- Date Plată
   total_price INTEGER NOT NULL,
-  deposit_paid INTEGER NOT NULL, -- cei 50%
+  deposit_paid INTEGER NOT NULL, -- 50%
   stripe_session_id TEXT UNIQUE,
   status booking_status DEFAULT 'pending'
 );
 
--- Index pentru căutări rapide de disponibilitate
+-- Index pentru performanță la căutare
 CREATE INDEX idx_bookings_dates ON bookings (check_in, check_out, status);
 
--- 4. Funcție RPC (Remote Procedure Call) pentru verificarea disponibilității
--- Aceasta rulează direct în DB pentru performanță maximă
+-- 6. Funcția RPC pentru verificarea disponibilității
 CREATE OR REPLACE FUNCTION check_availability(
   check_in_date DATE,
   check_out_date DATE
@@ -58,8 +63,8 @@ BEGIN
       SELECT COUNT(*)
       FROM bookings b
       WHERE b.room_type_id = rt.id
-      AND b.status IN ('confirmed', 'pending') -- Luăm în calcul și cele pending (în curs de plată)
-      AND b.check_in < check_out_date
+      AND b.status IN ('confirmed', 'pending') -- Numărăm și cele în curs de plată
+      AND b.check_in < check_out_date  -- Se suprapun datele
       AND b.check_out > check_in_date
     ) as available_count
   FROM room_types rt;
