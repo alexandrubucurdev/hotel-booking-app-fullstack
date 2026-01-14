@@ -273,7 +273,7 @@ export default function Header() {
                                                        );
                                                   })}
                                                   <a
-                                                       href="/contact"
+                                                       href="/rezervari"
                                                        className={`bg-traian-burgundy text-white rounded-lg hover:bg-traian-burgundy/90 transition-all duration-300 font-medium transform hover:scale-105 hover:shadow-lg ${
                                                             isScrolled
                                                                  ? "px-4 py-1.5 text-sm"
